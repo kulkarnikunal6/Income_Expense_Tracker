@@ -1,0 +1,106 @@
+name: Bootstrap Gradle Wrapper & Build APK
+
+on:
+  workflow_dispatch:        # you can run it manually
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 📦 Install Android SDK + cmdline tools
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: latest
+
+      # 🧰 Install a specific Gradle version temporarily (no wrapper needed yet)
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
+
+      # 🧪 Detect your application module (the one using com.android.application)
+      - name: Detect application module
+        id: detect
+        shell: bash
+        run: |
+          MOD=$(grep -rl "com.android.application" -- */build.gradle* 2>/dev/null | head -n1 | cut -d/ -f1)
+          if [ -z "$MOD" ]; then
+            echo "No module with com.android.application found; defaulting to 'app'"
+            MOD=app
+          fi
+          echo "MODULE_NAME=$MOD" >> "$GITHUB_ENV"
+          echo "Detected module: $MOD"
+
+      # 🔎 Read compileSdk & buildToolsVersion to install matching SDK packages
+      - name: Detect compileSdk and buildToolsVersion
+        id: sdkdetect
+        shell: bash
+        run: |
+          FILE1="${{ env.MODULE_NAME }}/build.gradle"
+          FILE2="${{ env.MODULE_NAME }}/build.gradle.kts"
+          COMPILE_SDK=""
+          BUILD_TOOLS=""
+
+          if [ -f "$FILE1" ]; then FILE="$FILE1"; elif [ -f "$FILE2" ]; then FILE="$FILE2"; else FILE=""; fi
+          if [ -n "$FILE" ]; then
+            COMPILE_SDK=$(grep -E "compileSdk\\s*=?\\s*[0-9]+" -h "$FILE" | grep -oE "[0-9]+" | head -n1 || true)
+            BUILD_TOOLS=$(grep -E "buildToolsVersion" -h "$FILE" | sed -E 's/.*"([0-9.]+)".*/\\1/' | head -n1 || true)
+          fi
+
+          [ -z "$COMPILE_SDK" ] && COMPILE_SDK=34
+          [ -z "$BUILD_TOOLS" ] && BUILD_TOOLS="34.0.0"
+
+          echo "COMPILE_SDK=$COMPILE_SDK" >> "$GITHUB_ENV"
+          echo "BUILD_TOOLS=$BUILD_TOOLS" >> "$GITHUB_ENV"
+          echo "compileSdk: $COMPILE_SDK"
+          echo "buildToolsVersion: $BUILD_TOOLS"
+
+      # 📦 Install the SDK packages and accept licenses
+      - name: Install SDK packages
+        shell: bash
+        run: |
+          sdkmanager "platforms;android-${{ env.COMPILE_SDK }}" "platform-tools" "build-tools;${{ env.BUILD_TOOLS }}" || true
+          yes | sdkmanager --licenses
+
+      # 🚀 Generate the Gradle Wrapper inside your repo (uses Gradle 8.7 above)
+      - name: Generate Gradle Wrapper
+        run: |
+          gradle wrapper --gradle-version 8.7
+          chmod +x gradlew
+
+      # 🧹 Clean & Build Debug with full logs; always upload logs
+      - name: Build Debug APK (via wrapper)
+        shell: bash
+        run: |
+          ./gradlew --version
+          ./gradlew clean assembleDebug --no-daemon --stacktrace --info | tee build-log.txt
+
+      # 📤 Upload APK (module-aware). If nothing found, don’t fail the job.
+      - name: Upload APK artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ExpenseTrackerBasic-Debug-APK
+          path: ${{ env.MODULE_NAME }}/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+
+      # 📄 Upload the build log for troubleshooting
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gradle-Build-Log
+          path: build-log.txt
