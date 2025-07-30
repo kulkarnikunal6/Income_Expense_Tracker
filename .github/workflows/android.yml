@@ -1,0 +1,59 @@
+name: Android CI - Build Debug APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: latest
+
+      - name: Install SDK packages
+        run: |
+          sdkmanager "platforms;android-34" "platform-tools" "build-tools;34.0.0" || true
+          yes | sdkmanager --licenses
+
+      - name: Make Gradle executable
+        run: chmod +x ./gradlew
+
+      - name: Enable Gradle cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      # 🔎 Auto-detect the Android application module
+      - name: Detect application module
+        id: detect
+        shell: bash
+        run: |
+          MODULE=$(grep -rl "com.android.application" -- */build.gradle* 2>/dev/null | head -n1 | cut -d/ -f1)
+          if [ -z "$MODULE" ]; then
+            echo "No module with com.android.application found; defaulting to 'app'"
+            MODULE=app
+          fi
+          echo "Detected module: $MODULE"
+          echo "MODULE_NAME=$MODULE" >> "$GITHUB_ENV"
+
+      # 📦 Upload the APK from the detected module
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ExpenseTrackerBasic-Debug-APK
+          path: ${{ env.MODULE_NAME }}/build/outputs/apk/debug/*.apk
